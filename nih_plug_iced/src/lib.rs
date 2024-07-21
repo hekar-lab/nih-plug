@@ -89,7 +89,6 @@
 //! }
 //! ```
 
-use baseview::WindowScalePolicy;
 use crossbeam::atomic::AtomicCell;
 use crossbeam::channel;
 use nih_plug::params::persist::PersistentField;
@@ -105,8 +104,19 @@ use crate::widgets::ParamMessage;
 
 /// Re-export for convenience.
 // FIXME: Running `cargo doc` on nightly compilers without this attribute triggers an ICE
-#[doc(no_inline)]
-pub use iced_baseview::*;
+// #[doc(no_inline)]
+// pub use iced_baseview::*;
+pub use iced_baseview::baseview::{self, WindowScalePolicy};
+pub use iced_baseview::futures::{self, Executor, Subscription};
+pub use iced_baseview::runtime::{Command, font};
+pub use iced_baseview::window::{WindowQueue, WindowSubs};
+pub use iced_baseview::core::{self, Element, Color};
+pub use iced_baseview::Application;
+pub use iced_baseview::Renderer;
+pub use iced_baseview::backend;
+pub use iced_baseview::style;
+pub use iced_baseview::widget;
+pub use iced_baseview::executor;
 
 pub mod assets;
 mod editor;
@@ -163,6 +173,8 @@ pub trait IcedEditor: 'static + Send + Sync + Sized {
     /// See [`Application::Flags`].
     type InitializationFlags: 'static + Clone + Send + Sync;
 
+    type Theme: Default + style::application::StyleSheet;
+
     /// See [`Application::new`]. This also receivs the GUI context in addition to the flags.
     fn new(
         initialization_fags: Self::InitializationFlags,
@@ -179,7 +191,6 @@ pub trait IcedEditor: 'static + Send + Sync + Sized {
     /// [`handle_param_message()`][Self::handle_param_message()] to handle the parameter update.
     fn update(
         &mut self,
-        window: &mut WindowQueue,
         message: Self::Message,
     ) -> Command<Self::Message>;
 
@@ -192,7 +203,7 @@ pub trait IcedEditor: 'static + Send + Sync + Sized {
     }
 
     /// See [`Application::view`].
-    fn view(&mut self) -> Element<'_, Self::Message>;
+    fn view(&self) -> Element<'_, Self::Message, crate::Renderer<Self::Theme>>;
 
     /// See [`Application::background_color`].
     fn background_color(&self) -> Color {
@@ -207,16 +218,16 @@ pub trait IcedEditor: 'static + Send + Sync + Sized {
     }
 
     /// See [`Application::renderer_settings`].
-    fn renderer_settings() -> iced_baseview::backend::settings::Settings {
-        iced_baseview::backend::settings::Settings {
+    fn renderer_settings() -> iced_baseview::backend::Settings {
+        iced_baseview::backend::Settings {
             // Enable some anti-aliasing by default. Since GUIs are likely very simple and most of
             // the work will be on the CPU anyways this should not affect performance much.
-            antialiasing: Some(iced_baseview::backend::settings::Antialiasing::MSAAx4),
+            antialiasing: None, //Some(iced_baseview::graphics::Antialiasing::MSAAx2),
             // Use Noto Sans as the default font as that renders a bit more cleanly than the default
             // Lato font. This crate also contains other weights and versions of this font you can
             // use for individual widgets.
-            default_font: Some(crate::assets::fonts::NOTO_SANS_REGULAR),
-            ..iced_baseview::backend::settings::Settings::default()
+            default_font: assets::NOTO_SANS_REGULAR,
+            ..iced_baseview::backend::Settings::default()
         }
     }
 

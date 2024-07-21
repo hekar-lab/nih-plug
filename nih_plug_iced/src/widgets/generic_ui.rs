@@ -2,6 +2,7 @@
 //! list of sliders and labels.
 
 use atomic_refcell::AtomicRefCell;
+use iced_baseview::core::widget::Tree;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -10,16 +11,25 @@ use std::sync::Arc;
 use nih_plug::prelude::{Param, ParamFlags, ParamPtr, Params};
 
 use super::{ParamMessage, ParamSlider};
-use crate::backend::Renderer;
-use crate::text::Renderer as TextRenderer;
-use crate::{
-    alignment, event, layout, renderer, widget, Alignment, Clipboard, Element, Event, Layout,
-    Length, Point, Rectangle, Row, Scrollable, Shell, Space, Text, Widget,
+use crate::core::{
+    event, layout, renderer, Alignment, Clipboard, Element, Event, Layout,
+    Length, Rectangle, Shell, Widget, 
 };
+use crate::widget::{Scrollable, Column, Row, Space};
+
+use crate::core::text::Renderer as TextRenderer;
+use crate::core::widget::text::StyleSheet as TextStyleSheet;
+use crate::widget::scrollable::StyleSheet as ScrollStyleSheet;
+use crate::widget::text_input::StyleSheet as TextInputStyleSheet;
+use crate::core::widget::text::Text;
 
 /// A widget that can be used to create a generic UI with. This is used in conjuction with empty
 /// structs to emulate existential types.
-pub trait ParamWidget {
+pub trait ParamWidget<Renderer>
+where 
+    Renderer: TextRenderer,
+    Renderer::Theme: TextStyleSheet + ScrollStyleSheet + TextInputStyleSheet,
+{
     /// The type of state stores by this parameter type.
     type State: Default;
 
@@ -27,7 +37,7 @@ pub trait ParamWidget {
     fn into_widget_element<'a, P: Param>(
         param: &'a P,
         state: &'a mut Self::State,
-    ) -> Element<'a, ParamMessage>;
+    ) -> Element<'a, ParamMessage, Renderer> where Renderer: 'a;
 
     /// The same as [`into_widget_element()`][Self::into_widget_element()], but for a `ParamPtr`.
     ///
@@ -37,7 +47,7 @@ pub trait ParamWidget {
     unsafe fn into_widget_element_raw<'a>(
         param: &ParamPtr,
         state: &'a mut Self::State,
-    ) -> Element<'a, ParamMessage> {
+    ) -> Element<'a, ParamMessage, Renderer> where Renderer: 'a {
         match param {
             ParamPtr::FloatParam(p) => Self::into_widget_element(&**p, state),
             ParamPtr::IntParam(p) => Self::into_widget_element(&**p, state),
@@ -55,8 +65,13 @@ pub struct GenericSlider;
 /// determines what widget to use for this.
 ///
 /// TODO: There's no way to configure the individual widgets.
-pub struct GenericUi<'a, W: ParamWidget> {
-    state: &'a mut State<W>,
+pub struct GenericUi<'a, W, Renderer> 
+where
+    W: ParamWidget<Renderer>,
+    Renderer: TextRenderer,
+    Renderer::Theme: TextStyleSheet + ScrollStyleSheet + TextInputStyleSheet,
+{
+    state: &'a mut State<W, Renderer>,
 
     params: Arc<dyn Params>,
 
@@ -68,24 +83,30 @@ pub struct GenericUi<'a, W: ParamWidget> {
 
     /// We don't emit any messages or store the actual widgets, but iced requires us to define some
     /// message type anyways.
-    _phantom: PhantomData<W>,
+    _widget: PhantomData<W>,
+    _renderer: PhantomData<Renderer>
 }
 
 /// State for a [`GenericUi`].
 #[derive(Debug, Default)]
-pub struct State<W: ParamWidget> {
-    /// The internal state for each parameter's widget.
-    scrollable_state: AtomicRefCell<widget::scrollable::State>,
+pub struct State<W, Renderer> 
+where 
+    W: ParamWidget<Renderer>,
+    Renderer: TextRenderer,
+    Renderer::Theme: TextStyleSheet + ScrollStyleSheet + TextInputStyleSheet,
+{
     /// The internal state for each parameter's widget.
     widget_state: AtomicRefCell<HashMap<ParamPtr, W::State>>,
 }
 
-impl<'a, W> GenericUi<'a, W>
+impl<'a, W, Renderer> GenericUi<'a, W, Renderer>
 where
-    W: ParamWidget,
+    W: ParamWidget<Renderer>,
+    Renderer: TextRenderer,
+    Renderer::Theme: TextStyleSheet + ScrollStyleSheet + TextInputStyleSheet,
 {
     /// Creates a new [`GenericUi`] for all provided parameters.
-    pub fn new(state: &'a mut State<W>, params: Arc<dyn Params>) -> Self {
+    pub fn new(state: &'a mut State<W, Renderer>, params: Arc<dyn Params>) -> Self {
         Self {
             state,
 
@@ -97,7 +118,8 @@ where
             max_height: u32::MAX,
             pad_scrollbar: false,
 
-            _phantom: PhantomData,
+            _widget: PhantomData,
+            _renderer: PhantomData
         }
     }
 
@@ -135,27 +157,18 @@ where
     /// mutably borrow the `Scrollable`'s widget state.
     fn with_scrollable_widget<T, R, F>(
         &'a self,
-        scrollable_state: &'a mut widget::scrollable::State,
         widget_state: &'a mut HashMap<ParamPtr, W::State>,
         renderer: R,
         f: F,
     ) -> T
     where
-        F: FnOnce(Scrollable<'a, ParamMessage>, R) -> T,
+        F: FnOnce(Scrollable<'a, ParamMessage, Renderer>, R) -> T,
         R: Borrow<Renderer>,
     {
         let text_size = renderer.borrow().default_size();
         let spacing = (text_size as f32 * 0.2).round() as u16;
-        let padding = (text_size as f32 * 0.5).round() as u16;
 
-        let mut scrollable = Scrollable::new(scrollable_state)
-            .width(self.width)
-            .height(self.height)
-            .max_width(self.max_width)
-            .max_height(self.max_height)
-            .spacing(spacing)
-            .padding(padding)
-            .align_items(Alignment::Center);
+        let mut col = Column::new();
 
         // Make sure we already have widget state for each widget
         let param_map = self.params.param_map();
@@ -188,29 +201,31 @@ where
                 .align_items(Alignment::Center)
                 .spacing(spacing * 2)
                 .push(
-                    Text::new(unsafe { param_ptr.name() })
-                        .height(20.into())
-                        .width(Length::Fill)
-                        .horizontal_alignment(alignment::Horizontal::Right)
-                        .vertical_alignment(alignment::Vertical::Center),
+                    Text::new(unsafe { param_ptr.name() }.to_string()),
                 )
                 .push(unsafe { W::into_widget_element_raw(&param_ptr, widget_state) });
             if self.pad_scrollbar {
                 // There's already spacing applied, so this element doesn't actually need to hae any
                 // size of its own
-                row = row.push(Space::with_width(Length::Units(0)));
+                row = row.push(Space::with_width(Length::Fixed(0.0)));
             }
 
-            scrollable = scrollable.push(row);
+            col = col.push(row);
         }
+
+        let scrollable = Scrollable::new(col)
+            .width(self.width)
+            .height(self.height);
 
         f(scrollable, renderer)
     }
 }
 
-impl<'a, W> Widget<ParamMessage, Renderer> for GenericUi<'a, W>
+impl<'a, W, Renderer> Widget<ParamMessage, Renderer> for GenericUi<'a, W, Renderer>
 where
-    W: ParamWidget,
+    W: ParamWidget<Renderer>,
+    Renderer: TextRenderer,
+    Renderer::Theme: TextStyleSheet + ScrollStyleSheet + TextInputStyleSheet,
 {
     fn width(&self) -> Length {
         self.width
@@ -221,10 +236,8 @@ where
     }
 
     fn layout(&self, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
-        let mut scrollable_state = self.state.scrollable_state.borrow_mut();
         let mut widget_state = self.state.widget_state.borrow_mut();
         self.with_scrollable_widget(
-            &mut scrollable_state,
             &mut widget_state,
             renderer,
             |scrollable, _| scrollable.layout(renderer, limits),
@@ -233,63 +246,92 @@ where
 
     fn draw(
         &self,
+        state: &Tree,
         renderer: &mut Renderer,
+        theme: &Renderer::Theme,
         style: &renderer::Style,
         layout: Layout<'_>,
-        cursor_position: Point,
+        cursor_position: crate::core::mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let mut scrollable_state = self.state.scrollable_state.borrow_mut();
         let mut widget_state = self.state.widget_state.borrow_mut();
         self.with_scrollable_widget(
-            &mut scrollable_state,
             &mut widget_state,
             renderer,
             |scrollable, renderer| {
-                scrollable.draw(renderer, style, layout, cursor_position, viewport)
+                scrollable.draw(
+                    state,
+                    renderer,
+                    theme,
+                    style, 
+                    layout, 
+                    cursor_position, 
+                    viewport
+                )
             },
         )
     }
 
     fn on_event(
         &mut self,
+        state: &mut Tree,
         event: Event,
         layout: Layout<'_>,
-        cursor_position: Point,
+        cursor_position: crate::core::mouse::Cursor,
         renderer: &Renderer,
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, ParamMessage>,
+        viewport: &Rectangle,
     ) -> event::Status {
-        let mut scrollable_state = self.state.scrollable_state.borrow_mut();
         let mut widget_state = self.state.widget_state.borrow_mut();
         self.with_scrollable_widget(
-            &mut scrollable_state,
             &mut widget_state,
             renderer,
             |mut scrollable, _| {
-                scrollable.on_event(event, layout, cursor_position, renderer, clipboard, shell)
+                scrollable.on_event(
+                    state,
+                    event, 
+                    layout, 
+                    cursor_position, 
+                    renderer, 
+                    clipboard, 
+                    shell,
+                    viewport
+                )
             },
         )
     }
 }
 
-impl ParamWidget for GenericSlider {
+impl<Renderer> ParamWidget<Renderer> for GenericSlider 
+where 
+    Renderer: TextRenderer,
+    Renderer::Theme: TextStyleSheet + ScrollStyleSheet + TextInputStyleSheet,
+{
     type State = super::param_slider::State;
 
     fn into_widget_element<'a, P: Param>(
         param: &'a P,
         state: &'a mut Self::State,
-    ) -> Element<'a, ParamMessage> {
+    ) -> Element<'a, ParamMessage, Renderer> 
+    where
+        Renderer: 'a
+    {
         ParamSlider::new(state, param).into()
     }
 }
 
-impl<'a, W: ParamWidget> GenericUi<'a, W> {
+impl<'a, W, Renderer> GenericUi<'a, W, Renderer> 
+where
+    W: ParamWidget<Renderer>,
+    Renderer: TextRenderer,
+    Renderer::Theme: TextStyleSheet + ScrollStyleSheet + TextInputStyleSheet
+{
     /// Convert this [`GenericUi`] into an [`Element`] with the correct message. You should have a
     /// variant on your own message type that wraps around [`ParamMessage`] so you can forward those
     /// messages to
     /// [`IcedEditor::handle_param_message()`][crate::IcedEditor::handle_param_message()].
-    pub fn map<Message, F>(self, f: F) -> Element<'a, Message>
+    pub fn map<Message, F>(self, f: F) -> Element<'a, Message, Renderer>
     where
         Message: 'static,
         F: Fn(ParamMessage) -> Message + 'static,
@@ -298,11 +340,13 @@ impl<'a, W: ParamWidget> GenericUi<'a, W> {
     }
 }
 
-impl<'a, W> From<GenericUi<'a, W>> for Element<'a, ParamMessage>
+impl<'a, W, Renderer> From<GenericUi<'a, W, Renderer>> for Element<'a, ParamMessage, Renderer>
 where
-    W: ParamWidget,
+    W: ParamWidget<Renderer>,
+    Renderer: TextRenderer,
+    Renderer::Theme: TextStyleSheet + ScrollStyleSheet + TextInputStyleSheet,
 {
-    fn from(widget: GenericUi<'a, W>) -> Self {
+    fn from(widget: GenericUi<'a, W, Renderer>) -> Self {
         Element::new(widget)
     }
 }

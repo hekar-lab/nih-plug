@@ -1,17 +1,18 @@
 //! A super simple peak meter widget.
 
 use crossbeam::atomic::AtomicCell;
+use iced_baseview::core::widget::Tree;
 use std::marker::PhantomData;
 use std::time::Duration;
 use std::time::Instant;
 
-use crate::backend::Renderer;
-use crate::renderer::Renderer as GraphicsRenderer;
-use crate::text::Renderer as TextRenderer;
-use crate::{
-    alignment, layout, renderer, text, Background, Color, Element, Font, Layout, Length, Point,
+use crate::core::{
+    alignment, layout, mouse, renderer, text, Background, Color, Element, Layout, Length,
     Rectangle, Size, Widget,
 };
+
+use crate::core::text::Renderer as TextRenderer;
+use crate::core::widget::text::StyleSheet as TextStyleSheet;
 
 /// The thickness of this widget's borders.
 const BORDER_WIDTH: f32 = 1.0;
@@ -22,8 +23,12 @@ const TICK_WIDTH: f32 = 1.0;
 ///
 /// TODO: There are currently no styling options at all
 /// TODO: Vertical peak meter, this is just a proof of concept to fit the gain GUI example.
-pub struct PeakMeter<'a, Message> {
-    state: &'a mut State,
+pub struct PeakMeter<Message, Renderer> 
+where 
+    Renderer: TextRenderer,
+    Renderer::Theme: TextStyleSheet
+{
+    state: State,
 
     /// The current measured value in decibel.
     current_value_db: f32,
@@ -33,11 +38,12 @@ pub struct PeakMeter<'a, Message> {
 
     height: Length,
     width: Length,
-    text_size: Option<u16>,
-    font: Font,
+    text_size: Option<f32>,
+    font: Option<Renderer::Font>,
 
     /// We don't emit any messages, but iced requires us to define some message type anyways.
-    _phantom: PhantomData<Message>,
+    _message: PhantomData<Message>,
+    _renderer: PhantomData<Renderer>,
 }
 
 /// State for a [`PeakMeter`].
@@ -49,24 +55,29 @@ pub struct State {
     last_held_peak_value: AtomicCell<Option<Instant>>,
 }
 
-impl<'a, Message> PeakMeter<'a, Message> {
+impl<'a, Message, Renderer> PeakMeter<Message, Renderer> 
+where 
+    Renderer: TextRenderer,
+    Renderer::Theme: TextStyleSheet
+{
     /// Creates a new [`PeakMeter`] using the current measurement in decibel. This measurement can
     /// already have some form of smoothing applied to it. This peak slider widget can draw the last
     /// hold value for you.
-    pub fn new(state: &'a mut State, value_db: f32) -> Self {
+    pub fn new(value_db: f32) -> Self {
         Self {
-            state,
+            state: Default::default(),
 
             current_value_db: value_db,
 
             hold_time: None,
 
-            width: Length::Units(180),
-            height: Length::Units(30),
+            width: Length::Fixed(180.0),
+            height: Length::Fixed(30.0),
             text_size: None,
-            font: <Renderer as TextRenderer>::Font::default(),
+            font: None,
 
-            _phantom: PhantomData,
+            _message: PhantomData,
+            _renderer: PhantomData
         }
     }
 
@@ -89,21 +100,23 @@ impl<'a, Message> PeakMeter<'a, Message> {
     }
 
     /// Sets the text size of the [`PeakMeter`]'s ticks bar.
-    pub fn text_size(mut self, size: u16) -> Self {
+    pub fn text_size(mut self, size: f32) -> Self {
         self.text_size = Some(size);
         self
     }
 
     /// Sets the font of the [`PeakMeter`]'s ticks bar.
-    pub fn font(mut self, font: Font) -> Self {
-        self.font = font;
+    pub fn font(mut self, font: Renderer::Font) -> Self {
+        self.font = Some(font);
         self
     }
 }
 
-impl<'a, Message> Widget<Message, Renderer> for PeakMeter<'a, Message>
+impl<'a, Message, Renderer> Widget<Message, Renderer> for PeakMeter<Message, Renderer>
 where
     Message: Clone,
+    Renderer: TextRenderer,
+    Renderer::Theme: TextStyleSheet
 {
     fn width(&self) -> Length {
         self.width
@@ -122,10 +135,12 @@ where
 
     fn draw(
         &self,
+        _state: &Tree,
         renderer: &mut Renderer,
+        _theme: &Renderer::Theme,
         style: &renderer::Style,
         layout: Layout<'_>,
-        _cursor_position: Point,
+        _cursor_position: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
@@ -141,7 +156,7 @@ where
 
         let text_size = self
             .text_size
-            .unwrap_or_else(|| (renderer.default_size() as f32 * 0.7).round() as u16);
+            .unwrap_or_else(|| (renderer.default_size() as f32 * 0.7).round());
 
         // We'll draw a simple horizontal for [-90, 20] dB where we'll treat -80 as -infinity, with
         // a label containing the tick markers below it. If `.hold_time()` was called then we'll
@@ -181,7 +196,7 @@ where
             renderer.fill_quad(
                 renderer::Quad {
                     bounds: tick_bounds,
-                    border_radius: 0.0,
+                    border_radius: [0.0; 4].into(),
                     border_width: 0.0,
                     border_color: Color::TRANSPARENT,
                 },
@@ -211,7 +226,7 @@ where
                         width: TICK_WIDTH,
                         height: bar_bounds.height - (BORDER_WIDTH * 2.0),
                     },
-                    border_radius: 0.0,
+                    border_radius: [0.0; 4].into(),
                     border_width: 0.0,
                     border_color: Color::TRANSPARENT,
                 },
@@ -223,13 +238,14 @@ where
         renderer.fill_quad(
             renderer::Quad {
                 bounds: bar_bounds,
-                border_radius: 0.0,
+                border_radius: [0.0; 4].into(),
                 border_width: BORDER_WIDTH,
                 border_color: Color::BLACK,
             },
             Background::Color(Color::TRANSPARENT),
         );
 
+        let font = self.font.unwrap_or_else(|| renderer.default_font());
         // Beneath the bar we want to draw the names of the ticks
         for tick_db in text_ticks {
             let x_coordinate = db_to_x_coord(tick_db as f32);
@@ -242,7 +258,7 @@ where
                         width: TICK_WIDTH,
                         height: ticks_bounds.height * 0.3,
                     },
-                    border_radius: 0.0,
+                    border_radius: [0.0; 4].into(),
                     border_width: 0.0,
                     border_color: Color::TRANSPARENT,
                 },
@@ -256,7 +272,7 @@ where
             };
             renderer.fill_text(text::Text {
                 content: &tick_text,
-                font: self.font,
+                font,
                 size: text_size as f32,
                 bounds: Rectangle {
                     x: x_coordinate,
@@ -266,17 +282,24 @@ where
                 color: style.text_color,
                 horizontal_alignment: alignment::Horizontal::Center,
                 vertical_alignment: alignment::Vertical::Top,
+                line_height: text::LineHeight::default(),
+                shaping: text::Shaping::Basic,
             });
         }
 
         // Every proper graph needs a unit label
         let zero_db_x_coordinate = db_to_x_coord(0.0);
-        let zero_db_text_width = renderer.measure_width("0", text_size, self.font);
+        let zero_db_text_width = renderer.measure_width(
+            "0", 
+            text_size, 
+            font,
+            text::Shaping::Basic,
+        );
         renderer.fill_text(text::Text {
             // The spacing looks a bit off if we start with a space here so we'll add a little
             // offset to the x-coordinate instead
             content: "dBFS",
-            font: self.font,
+            font,
             size: text_size as f32,
             bounds: Rectangle {
                 x: zero_db_x_coordinate + (zero_db_text_width / 2.0) + (text_size as f32 * 0.2),
@@ -286,15 +309,19 @@ where
             color: style.text_color,
             horizontal_alignment: alignment::Horizontal::Left,
             vertical_alignment: alignment::Vertical::Top,
+            line_height: text::LineHeight::default(),
+            shaping: text::Shaping::Basic,
         });
     }
 }
 
-impl<'a, Message> From<PeakMeter<'a, Message>> for Element<'a, Message>
+impl<'a, Message, Renderer> From<PeakMeter<Message, Renderer>> for Element<'a, Message, Renderer>
 where
     Message: 'a + Clone,
+    Renderer: 'a + TextRenderer,
+    Renderer::Theme: TextStyleSheet
 {
-    fn from(widget: PeakMeter<'a, Message>) -> Self {
+    fn from(widget: PeakMeter<Message, Renderer>) -> Self {
         Element::new(widget)
     }
 }
