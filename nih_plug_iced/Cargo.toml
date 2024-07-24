@@ -7,6 +7,11 @@ license = "ISC"
 
 description = "An adapter to use iced GUIs with NIH-plug"
 
+[features]
+image = ["iced_baseview/image"]
+svg = ["iced_baseview/svg"]
+canvas = ["iced_baseview/canvas"]
+
 [dependencies]
 nih_plug = { path = "..", default-features = false }
 nih_plug_assets = { git = "https://github.com/robbert-vdh/nih_plug_assets.git" }
