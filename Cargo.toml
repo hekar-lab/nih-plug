@@ -86,7 +86,7 @@ cfg-if = "1.0"
 clap-sys = {  git = "https://github.com/robbert-vdh/clap-sys.git", branch = "feature/cstr-macro" }
 crossbeam = "0.8"
 lazy_static = "1.4"
-log = { version = "0.4", features = ["std", "release_max_level_info"] }
+log = { version = "0.4", features = ["std"] }
 midi-consts = "0.1"
 nih_log = "0.3.1"
 parking_lot = "0.12"
@@ -101,7 +101,7 @@ assert_no_alloc = { git = "https://github.com/robbert-vdh/rust-assert-no-alloc.g
 # Used for the `standalone` feature
 # NOTE: OpenGL support is not needed here, but rust-analyzer gets confused when
 #       some crates do use it and others don't
-baseview = { git = "https://github.com/RustAudio/baseview.git", rev = "2c1b1a7b0fef1a29a5150a6a8f6fef6a0cbab8c4", features = ["opengl"], optional = true }
+baseview = { git = "https://github.com/RustAudio/baseview.git", rev = "579130ecb4f9f315ae52190af42f0ea46aeaa4a2", features = ["opengl"], optional = true }
 # All the claps!
 clap = { version = "4.1.8", features = ["derive", "wrap_help"], optional = true }
 cpal = { version = "0.15", optional = true }
